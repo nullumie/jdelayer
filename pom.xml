@@ -1,0 +1,291 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.github.nullumie</groupId>
+    <artifactId>jdelayer</artifactId>
+    <version>${revision}${changelist}</version>
+    <packaging>jar</packaging>
+
+    <name>JDelayer</name>
+    <description>JDelayer is a lightweight, high-precision thread delaying utility for Java.</description>
+    <url>https://github.com/nullumie/jdelayer</url>
+
+    <licenses>
+        <license>
+            <name>GNU Lesser General Public License v3.0 only</name>
+            <url>https://www.gnu.org/licenses/lgpl-3.0.html</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>nullumie</id>
+            <name>Nullumie</name>
+            <url>https://github.com/nullumie</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:https://github.com/nullumie/jdelayer.git</connection>
+        <developerConnection>scm:git:ssh://github.com/nullumie/jdelayer.git</developerConnection>
+        <url>https://github.com/nullumie/jdelayer</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <properties>
+        <revision>1.0.0</revision>
+        <changelist></changelist>
+
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <license.file>lgpl3.txt</license.file>
+        <licenseHeader.file>lgpl3-only-header.txt</licenseHeader.file>
+
+        <gpg.skip>true</gpg.skip>
+        <publishable>false</publishable>
+        <skipPublishing>true</skipPublishing>
+        <spotless.skip>true</spotless.skip>
+        <maven.install.skip>false</maven.install.skip>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>6.1.3</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.jspecify</groupId>
+            <artifactId>jspecify</artifactId>
+            <version>1.0.1</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-suite-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.6.0</version>
+                <configuration>
+                    <includes>
+                        <include>**/DelayerTestSuite.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.2.0</version>
+                <executions>
+                    <execution>
+                        <id>copy-and-rename-license</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <copy file="${project.basedir}/licenses/${license.file}"
+                                      tofile="${project.build.outputDirectory}/META-INF/LICENSE"
+                                      overwrite="true" />
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <version>3.10.2</version>
+                <configuration>
+                    <licenseHeader>
+                        <file>${project.basedir}/licenses/${licenseHeader.file}</file>
+                        <delimiter>package</delimiter>
+                    </licenseHeader>
+                    <java>
+                        <googleJavaFormat>
+                            <style>AOSP</style>
+                        </googleJavaFormat>
+                        <importOrder />
+                        <removeUnusedImports />
+                    </java>
+                    <skip>${spotless.skip}</skip>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>spotless-check</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.7.3</version>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <flattenMode>ossrh</flattenMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>3.4.0</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.12.0</version>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-gpg-plugin</artifactId>
+                <version>3.2.8</version>
+                <configuration>
+                    <useAgent>true</useAgent>
+                    <skip>${gpg.skip}</skip>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>sign-artifacts</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>sign</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-install-plugin</artifactId>
+                <version>3.1.4</version>
+                <configuration>
+                    <skip>${maven.install.skip}</skip>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>0.12.0</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                    <autoPublish>false</autoPublish>
+                    <waitUntil>validated</waitUntil>
+                    <skipPublishing>${skipPublishing}</skipPublishing>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <id>feature</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <properties>
+                <spotless.skip>true</spotless.skip>
+                <changelist>-SNAPSHOT</changelist>
+                <gpg.skip>true</gpg.skip>
+                <skipPublishing>true</skipPublishing>
+            </properties>
+        </profile>
+
+        <profile>
+            <id>integration</id>
+            <properties>
+                <spotless.skip>false</spotless.skip>
+                <changelist>-SNAPSHOT</changelist>
+                <gpg.skip>true</gpg.skip>
+                <skipPublishing>false</skipPublishing>
+            </properties>
+        </profile>
+
+        <profile>
+            <id>production</id>
+            <properties>
+                <spotless.skip>false</spotless.skip>
+                <changelist></changelist>
+                <gpg.skip>false</gpg.skip>
+                <skipPublishing>false</skipPublishing>
+            </properties>
+        </profile>
+    </profiles>
+</project>
