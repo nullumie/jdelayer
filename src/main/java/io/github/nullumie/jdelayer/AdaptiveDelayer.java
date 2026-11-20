@@ -130,8 +130,7 @@ public final class AdaptiveDelayer extends AbstractDelayer {
         }
 
         long windowReserve = Math.clamp(currentSpinWindow, dynamicSpinWindow, timeoutRemainingTime);
-        long parkTargetTime = deadline - windowReserve;
-        long requestedParkNanos = parkTargetTime - now;
+        long requestedParkNanos = timeoutRemainingTime - windowReserve;
 
         if (requestedParkNanos > 0) {
             LockSupport.parkNanos(requestedParkNanos);

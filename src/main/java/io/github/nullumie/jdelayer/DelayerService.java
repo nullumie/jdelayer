@@ -100,7 +100,7 @@ public interface DelayerService extends AutoCloseable {
     }
 
     /**
-     * Blocks the current thread for the specified duration.
+     * Blocks the current thread for the specified duration starting from the current time.
      *
      * @param duration the length of time to delay
      * @param unit the time unit of {@code duration}
@@ -109,7 +109,25 @@ public interface DelayerService extends AutoCloseable {
      * @throws NullPointerException if {@code unit} is {@code null}
      * @throws IllegalStateException if this service is closed
      */
-    void delay(long duration, TimeUnit unit)
+    default void delay(long duration, TimeUnit unit)
+            throws InterruptedDelayException, CanceledDelayException {
+        long startTimeNanos = System.nanoTime();
+        delay(startTimeNanos, duration, unit);
+    }
+
+    /**
+     * Blocks the current thread for the specified duration relative to a given start timestamp.
+     *
+     * @param startNanoTime the start timestamp in nanoseconds relative to {@link System#nanoTime()}
+     * @param duration the duration to delay from {@code startNanoTime}
+     * @param unit the time unit of {@code duration}
+     * @throws InterruptedDelayException if interrupted prior to or during the delay
+     * @throws CanceledDelayException if canceled prior to or during the delay
+     * @throws WrongThreadException if called from an unauthorized thread
+     * @throws NullPointerException if {@code unit} is {@code null}
+     * @throws IllegalStateException if this service is closed
+     */
+    void delay(long startNanoTime, long duration, TimeUnit unit)
             throws InterruptedDelayException, CanceledDelayException;
 
     /**

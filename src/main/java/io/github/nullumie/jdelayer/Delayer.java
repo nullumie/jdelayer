@@ -45,7 +45,7 @@ public interface Delayer {
     boolean isInterrupted();
 
     /**
-     * Blocks the bound thread for the specified duration.
+     * Blocks the bound thread for the specified duration starting from the current time.
      *
      * @param duration the duration to delay
      * @param unit the time unit of {@code duration}
@@ -54,7 +54,24 @@ public interface Delayer {
      * @throws WrongThreadException if called from an unauthorized thread
      * @throws NullPointerException if {@code unit} is {@code null}
      */
-    void delay(long duration, TimeUnit unit)
+    default void delay(long duration, TimeUnit unit)
+            throws InterruptedDelayException, CanceledDelayException {
+        long startTimeNanos = System.nanoTime();
+        delay(startTimeNanos, duration, unit);
+    }
+
+    /**
+     * Blocks the bound thread for the specified duration relative to a given start timestamp.
+     *
+     * @param startNanoTime the start timestamp in nanoseconds relative to {@link System#nanoTime()}
+     * @param duration the duration to delay from {@code startNanoTime}
+     * @param unit the time unit of {@code duration}
+     * @throws InterruptedDelayException if interrupted prior to or during the delay
+     * @throws CanceledDelayException if canceled prior to or during the delay
+     * @throws WrongThreadException if called from an unauthorized thread
+     * @throws NullPointerException if {@code unit} is {@code null}
+     */
+    void delay(long startNanoTime, long duration, TimeUnit unit)
             throws InterruptedDelayException, CanceledDelayException;
 
     /**

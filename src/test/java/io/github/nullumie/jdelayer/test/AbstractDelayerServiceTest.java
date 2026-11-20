@@ -157,15 +157,6 @@ class AbstractDelayerServiceTest {
     class DelayExecutionTests {
 
         @Test
-        @DisplayName("Should return immediately without registering delayer when duration is <= 0")
-        void returnsImmediatelyOnNonPositiveDuration() {
-            assertDoesNotThrow(() -> service.delay(0, TimeUnit.MILLISECONDS));
-            assertDoesNotThrow(() -> service.delay(-100, TimeUnit.SECONDS));
-
-            assertFalse(service.hasDelayer(Thread.currentThread()));
-        }
-
-        @Test
         @DisplayName("Should throw NullPointerException if TimeUnit parameter is null")
         void throwsNpeOnNullTimeUnit() {
             assertThrows(NullPointerException.class, () -> service.delay(10, null));

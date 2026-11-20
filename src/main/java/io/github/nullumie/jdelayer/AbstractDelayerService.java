@@ -34,7 +34,6 @@ import org.jspecify.annotations.Nullable;
  */
 public abstract class AbstractDelayerService implements DelayerService, AutoCloseable {
 
-    private static final String NULL_UNIT_MSG = "unit must not be null";
     private static final String NULL_THREAD_MSG = "thread must not be null";
     private static final String SHUTDOWN_MSG = "DelayerService has been closed";
 
@@ -75,12 +74,12 @@ public abstract class AbstractDelayerService implements DelayerService, AutoClos
     }
 
     @Override
-    public final void delay(long duration, TimeUnit unit)
+    public final void delay(long startNanoTime, long duration, TimeUnit unit)
             throws InterruptedDelayException, CanceledDelayException {
-        if (duration <= 0) return;
-        long deadline =
-                System.nanoTime() + Objects.requireNonNull(unit, NULL_UNIT_MSG).toNanos(duration);
-        delay(deadline);
+        ensureNotClosed();
+        Thread thread = Thread.currentThread();
+        Delayer delayer = delayers.computeIfAbsent(thread, this::onProvideDelayer);
+        delayer.delay(startNanoTime, duration, unit);
     }
 
     @Override

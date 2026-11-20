@@ -71,41 +71,34 @@ public abstract class AbstractDelayer implements Delayer {
     }
 
     @Override
-    public final void delay(long duration, TimeUnit unit)
+    public final void delay(long startNanoTime, long duration, TimeUnit unit)
             throws InterruptedDelayException, CanceledDelayException {
         ensureOnThread();
         Objects.requireNonNull(unit, NULL_UNIT_MSG);
-
         enterDelayState();
         try {
             if (duration <= 0) return;
-
             long remainingNanos = unit.toNanos(duration);
-            long now = System.nanoTime();
 
-            long deadline =
-                    (remainingNanos > Long.MAX_VALUE - now) ? Long.MAX_VALUE : now + remainingNanos;
+            boolean clamped = startNanoTime >= 0 && remainingNanos > Long.MAX_VALUE - startNanoTime;
+            long deadline = clamped ? Long.MAX_VALUE : startNanoTime + remainingNanos;
 
             while (deadline - System.nanoTime() > 0) {
-                checkState();
                 onDelay(deadline);
+                checkState();
             }
 
-            if (deadline == Long.MAX_VALUE) {
-                long elapsed = System.nanoTime() - now;
+            if (clamped) {
+                long elapsed = System.nanoTime() - startNanoTime;
                 remainingNanos -= elapsed;
-
                 if (remainingNanos > 0) {
                     deadline = System.nanoTime() + remainingNanos;
-
                     while (deadline - System.nanoTime() > 0) {
-                        checkState();
                         onDelay(deadline);
+                        checkState();
                     }
                 }
             }
-
-            checkState();
         } finally {
             exitDelayState();
         }
@@ -115,16 +108,13 @@ public abstract class AbstractDelayer implements Delayer {
     public final void delay(long deadline)
             throws InterruptedDelayException, CanceledDelayException {
         ensureOnThread();
-
         enterDelayState();
         try {
             if (deadline - System.nanoTime() <= 0) return;
-
             while (deadline - System.nanoTime() > 0) {
-                checkState();
                 onDelay(deadline);
+                checkState();
             }
-            checkState();
         } finally {
             exitDelayState();
         }
@@ -146,13 +136,11 @@ public abstract class AbstractDelayer implements Delayer {
     protected abstract void onDelay(long deadline);
 
     private void enterDelayState() throws CanceledDelayException, InterruptedDelayException {
-        State previousState = state.getAndSet(State.DELAYING);
-
-        if (previousState == State.CANCELED) {
-            state.set(State.CANCELED);
-            throwCancelledDelayException();
+        while (true) {
+            State current = state.get();
+            if (current == State.CANCELED) throwCancelledDelayException();
+            if (state.compareAndSet(current, State.DELAYING)) break;
         }
-
         checkState();
     }
 
@@ -161,13 +149,11 @@ public abstract class AbstractDelayer implements Delayer {
     }
 
     private void checkState() throws InterruptedDelayException, CanceledDelayException {
-        if (state.get() == State.CANCELED) {
-            throwCancelledDelayException();
-        }
-
+        if (state.get() == State.CANCELED) throwCancelledDelayException();
         if (thread.isInterrupted()) {
-            state.set(State.INTERRUPTED);
-            throwInterruptedDelayException();
+            if (state.compareAndSet(State.DELAYING, State.INTERRUPTED)
+                    || state.get() == State.INTERRUPTED) throwInterruptedDelayException();
+            if (state.get() == State.CANCELED) throwCancelledDelayException();
         }
     }
 
