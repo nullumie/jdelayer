@@ -80,24 +80,14 @@ public abstract class AbstractDelayer implements Delayer {
             if (duration <= 0) return;
             long remainingNanos = unit.toNanos(duration);
 
-            boolean clamped = startNanoTime >= 0 && remainingNanos > Long.MAX_VALUE - startNanoTime;
-            long deadline = clamped ? Long.MAX_VALUE : startNanoTime + remainingNanos;
-
-            while (deadline - System.nanoTime() > 0) {
-                onDelay(deadline);
-                checkState();
-            }
-
-            if (clamped) {
+            while (true) {
                 long elapsed = System.nanoTime() - startNanoTime;
-                remainingNanos -= elapsed;
-                if (remainingNanos > 0) {
-                    deadline = System.nanoTime() + remainingNanos;
-                    while (deadline - System.nanoTime() > 0) {
-                        onDelay(deadline);
-                        checkState();
-                    }
-                }
+                long left = remainingNanos - elapsed;
+                if (left <= 0) break;
+
+                long stepNanos = Math.min(left, Long.MAX_VALUE / 2);
+                onDelay(System.nanoTime() + stepNanos);
+                checkState();
             }
         } finally {
             exitDelayState();
