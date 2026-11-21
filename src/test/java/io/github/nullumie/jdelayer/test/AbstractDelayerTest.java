@@ -35,7 +35,6 @@ import org.junit.jupiter.api.Test;
 class AbstractDelayerTest {
 
     private TestDelayer delayer;
-    private Thread targetThread;
 
     /** Concrete test implementation of AbstractDelayer. */
     private static class TestDelayer extends AbstractDelayer {
@@ -61,7 +60,7 @@ class AbstractDelayerTest {
 
     @BeforeEach
     void setUp() {
-        targetThread = Thread.currentThread();
+        Thread targetThread = Thread.currentThread();
         delayer = new TestDelayer(targetThread);
     }
 
@@ -101,7 +100,28 @@ class AbstractDelayerTest {
                                     thrown.set(t);
                                 }
                             });
+            wrongThread.start();
+            wrongThread.join();
 
+            assertInstanceOf(WrongThreadException.class, thrown.get());
+        }
+
+        @Test
+        @DisplayName(
+                "Should throw WrongThreadException when delay(startNanoTime, ...) called from wrong thread")
+        void delayWithStartTime_fromWrongThread_throwsWrongThreadException()
+                throws InterruptedException {
+            AtomicReference<Throwable> thrown = new AtomicReference<>();
+            long startNanoTime = System.nanoTime();
+            Thread wrongThread =
+                    new Thread(
+                            () -> {
+                                try {
+                                    delayer.delay(startNanoTime, 100, TimeUnit.MILLISECONDS);
+                                } catch (Throwable t) {
+                                    thrown.set(t);
+                                }
+                            });
             wrongThread.start();
             wrongThread.join();
 
@@ -112,6 +132,8 @@ class AbstractDelayerTest {
         @DisplayName("Should throw NullPointerException when TimeUnit is null")
         void delay_nullTimeUnit_throwsException() {
             assertThrows(NullPointerException.class, () -> delayer.delay(100, null));
+            assertThrows(
+                    NullPointerException.class, () -> delayer.delay(System.nanoTime(), 100, null));
         }
     }
 
@@ -124,7 +146,8 @@ class AbstractDelayerTest {
         void delay_nonPositiveDuration_returnsImmediately() {
             assertDoesNotThrow(() -> delayer.delay(0, TimeUnit.MILLISECONDS));
             assertDoesNotThrow(() -> delayer.delay(-10, TimeUnit.MILLISECONDS));
-
+            assertDoesNotThrow(() -> delayer.delay(System.nanoTime(), 0, TimeUnit.MILLISECONDS));
+            assertDoesNotThrow(() -> delayer.delay(System.nanoTime(), -10, TimeUnit.MILLISECONDS));
             assertFalse(delayer.isDelaying());
         }
 
@@ -134,7 +157,33 @@ class AbstractDelayerTest {
             long now = System.nanoTime();
             assertDoesNotThrow(() -> delayer.delay(now - 1_000_000));
             assertDoesNotThrow(() -> delayer.delay(now));
+            assertFalse(delayer.isDelaying());
+        }
 
+        @Test
+        @DisplayName(
+                "Should complete immediately if startNanoTime + duration is already in the past")
+        void delayWithStartTime_alreadyExpired_returnsImmediately() {
+            AtomicBoolean executed = new AtomicBoolean(false);
+            delayer.setOnDelayAction(() -> executed.set(true));
+
+            long pastStartTime = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(50);
+            assertDoesNotThrow(() -> delayer.delay(pastStartTime, 10, TimeUnit.MILLISECONDS));
+
+            assertFalse(executed.get());
+            assertFalse(delayer.isDelaying());
+        }
+
+        @Test
+        @DisplayName("Should execute delay relative to given startNanoTime")
+        void delayWithStartTime_validFutureWindow_executesUntilExpired() {
+            AtomicBoolean executed = new AtomicBoolean(false);
+            delayer.setOnDelayAction(() -> executed.set(true));
+
+            long startTime = System.nanoTime();
+            assertDoesNotThrow(() -> delayer.delay(startTime, 15, TimeUnit.MILLISECONDS));
+
+            assertTrue(executed.get());
             assertFalse(delayer.isDelaying());
         }
 
@@ -146,15 +195,15 @@ class AbstractDelayerTest {
 
             long futureDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(10);
             assertDoesNotThrow(() -> delayer.delay(futureDeadline));
-
             assertTrue(executed.get());
             assertFalse(delayer.isDelaying());
         }
 
         @Test
         @DisplayName("Should handle long duration saturation without throwing numeric overflow")
-        void delay_overflowDuration_capsAtLongMax() throws InterruptedException {
+        void delay_overflowDuration_capsSafely() throws InterruptedException {
             AtomicBoolean executed = new AtomicBoolean(false);
+
             Thread worker =
                     new Thread(
                             () -> {
@@ -163,17 +212,20 @@ class AbstractDelayerTest {
                                 overflowDelayer.setOnDelayAction(
                                         () -> {
                                             executed.set(true);
-                                            overflowDelayer.cancel(); // Exit Long.MAX_VALUE loop
+                                            overflowDelayer.cancel();
                                         });
 
                                 assertThrows(
                                         CanceledDelayException.class,
-                                        () -> overflowDelayer.delay(Long.MAX_VALUE, TimeUnit.DAYS));
+                                        () ->
+                                                overflowDelayer.delay(
+                                                        System.nanoTime(),
+                                                        Long.MAX_VALUE,
+                                                        TimeUnit.DAYS));
                             });
 
             worker.start();
             worker.join(2000);
-
             assertTrue(executed.get());
         }
 
@@ -184,7 +236,6 @@ class AbstractDelayerTest {
             delayer.setOnDelayAction(() -> wasDelaying.set(delayer.isDelaying()));
 
             assertDoesNotThrow(() -> delayer.delay(10, TimeUnit.MILLISECONDS));
-
             assertTrue(wasDelaying.get());
             assertFalse(delayer.isDelaying());
         }
@@ -203,10 +254,9 @@ class AbstractDelayerTest {
                 assertThrows(
                         InterruptedDelayException.class,
                         () -> delayer.delay(100, TimeUnit.MILLISECONDS));
-
                 assertTrue(delayer.isInterrupted());
             } finally {
-                Thread.interrupted(); // Safely clear interrupt status even if assertions fail
+                Thread.interrupted();
             }
         }
 
@@ -214,10 +264,8 @@ class AbstractDelayerTest {
         @DisplayName("Should throw CanceledDelayException when pre-canceled")
         void delay_precanceled_throwsCanceledDelayException() {
             delayer.cancel();
-
             assertThrows(
                     CanceledDelayException.class, () -> delayer.delay(100, TimeUnit.MILLISECONDS));
-
             assertTrue(delayer.isCanceled());
         }
 
@@ -227,7 +275,6 @@ class AbstractDelayerTest {
         void cancel_activeDelayingThread_triggersInterruption() throws Exception {
             CountDownLatch enteredDelayLatch = new CountDownLatch(1);
             AtomicReference<Throwable> caughtException = new AtomicReference<>();
-
             TestDelayer[] activeDelayerHolder = new TestDelayer[1];
 
             Thread workerThread =
@@ -252,7 +299,6 @@ class AbstractDelayerTest {
             assertTrue(enteredDelayLatch.await(2, TimeUnit.SECONDS));
 
             activeDelayerHolder[0].cancel();
-
             workerThread.join(2000);
 
             assertInstanceOf(CanceledDelayException.class, caughtException.get());
