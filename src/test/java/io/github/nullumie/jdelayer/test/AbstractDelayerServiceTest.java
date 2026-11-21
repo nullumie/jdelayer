@@ -62,8 +62,7 @@ class AbstractDelayerServiceTest {
             }
             long remainingNanos = deadline - System.nanoTime();
             if (remainingNanos > 0) {
-                LockSupport.parkNanos(
-                        Math.min(remainingNanos, 10_000_000L)); // Park up to 10ms per iteration
+                LockSupport.parkNanos(Math.min(remainingNanos, 10_000_000L));
             }
         }
     }
@@ -107,6 +106,22 @@ class AbstractDelayerServiceTest {
             assertNull(service.exposeGetDelayer(currentThread));
 
             assertDoesNotThrow(() -> service.delay(1, TimeUnit.MILLISECONDS));
+
+            assertTrue(service.hasDelayer(currentThread));
+            assertNotNull(service.exposeGetDelayer(currentThread));
+        }
+
+        @Test
+        @DisplayName(
+                "Should lazily create and map Delayer when delay(startNanoTime, duration, unit) is invoked")
+        void lazilyProvisionsDelayerWithStartNanoTime() {
+            Thread currentThread = Thread.currentThread();
+            long startNanoTime = System.nanoTime();
+
+            assertFalse(service.hasDelayer(currentThread));
+            assertNull(service.exposeGetDelayer(currentThread));
+
+            assertDoesNotThrow(() -> service.delay(startNanoTime, 1, TimeUnit.MILLISECONDS));
 
             assertTrue(service.hasDelayer(currentThread));
             assertNotNull(service.exposeGetDelayer(currentThread));
@@ -160,6 +175,8 @@ class AbstractDelayerServiceTest {
         @DisplayName("Should throw NullPointerException if TimeUnit parameter is null")
         void throwsNpeOnNullTimeUnit() {
             assertThrows(NullPointerException.class, () -> service.delay(10, null));
+            assertThrows(
+                    NullPointerException.class, () -> service.delay(System.nanoTime(), 10, null));
         }
 
         @Test
@@ -190,6 +207,41 @@ class AbstractDelayerServiceTest {
 
             assertTrue(wasDelayingReported.get());
             assertFalse(service.isDelaying(workerThread));
+        }
+
+        @Test
+        @DisplayName(
+                "Should reflect delaying status and support cancellation during delay(startNanoTime, duration, unit)")
+        void reflectsDelayingStatusWithStartNanoTime() throws InterruptedException {
+            CountDownLatch enteredDelay = new CountDownLatch(1);
+            AtomicBoolean wasDelayingReported = new AtomicBoolean(false);
+            AtomicReference<Throwable> thrown = new AtomicReference<>();
+
+            service.setOnProvideCallback(enteredDelay::countDown);
+
+            Thread workerThread =
+                    new Thread(
+                            () -> {
+                                try {
+                                    service.delay(System.nanoTime(), 2, TimeUnit.SECONDS);
+                                } catch (Throwable t) {
+                                    thrown.set(t);
+                                }
+                            },
+                            "worker-thread-start-nano");
+
+            workerThread.start();
+            assertTrue(enteredDelay.await(2, TimeUnit.SECONDS));
+
+            wasDelayingReported.set(service.isDelaying(workerThread));
+
+            service.cancel(workerThread);
+            workerThread.join();
+
+            assertTrue(wasDelayingReported.get());
+            assertFalse(service.isDelaying(workerThread));
+            assertTrue(service.isCanceled(workerThread));
+            assertInstanceOf(CanceledDelayException.class, thrown.get());
         }
     }
 
@@ -372,6 +424,9 @@ class AbstractDelayerServiceTest {
 
             assertThrows(
                     IllegalStateException.class, () -> service.delay(10, TimeUnit.MILLISECONDS));
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> service.delay(System.nanoTime(), 10, TimeUnit.MILLISECONDS));
             assertThrows(
                     IllegalStateException.class, () -> service.delay(System.nanoTime() + 1000));
             assertThrows(IllegalStateException.class, () -> service.hasDelayer(current));
