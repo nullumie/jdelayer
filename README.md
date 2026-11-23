@@ -22,14 +22,14 @@ A high-precision concurrency utility designed for managing low-latency, thread-b
 <dependency>
     <groupId>io.github.nullumie</groupId>
     <artifactId>jdelayer</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'io.github.nullumie:jdelayer:1.0.0'
+implementation 'io.github.nullumie:jdelayer:1.1.0'
 ```
 
 ## Performance Profiles & Implementations
