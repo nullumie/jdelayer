@@ -53,7 +53,7 @@ public final class AdaptiveDelayer extends AbstractDelayer {
             double spinWindowIncreaseSmoothing) {
         super(thread);
         this.minSpinWindow = validateMinSpinWindow(minSpinWindow);
-        this.maxSpinWindow = validateMaxSpinWindow(this.minSpinWindow, maxSpinWindow);
+        this.maxSpinWindow = validateMaxSpinWindow(minSpinWindow, maxSpinWindow);
         this.spinThresholdFactor = validateFactorRange(spinThresholdFactor);
         this.spinWindowDecreaseSmoothing = validateFactorRange(spinWindowDecreaseSmoothing);
         this.spinWindowIncreaseSmoothing = validateFactorRange(spinWindowIncreaseSmoothing);
