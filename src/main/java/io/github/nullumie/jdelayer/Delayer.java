@@ -20,7 +20,7 @@ package io.github.nullumie.jdelayer;
 
 import java.util.concurrent.TimeUnit;
 
-/** Defines a synchronous boundary for blocking thread execution. */
+/** Defines a thread-bound synchronous boundary for blocking thread execution. */
 public interface Delayer {
 
     /**
@@ -38,7 +38,7 @@ public interface Delayer {
     boolean isCanceled();
 
     /**
-     * Checks if the delay operation was interrupted.
+     * Checks if the delayer is currently in an interrupted state.
      *
      * @return {@code true} if interrupted; {@code false} otherwise
      */
@@ -49,8 +49,9 @@ public interface Delayer {
      *
      * @param duration the duration to delay
      * @param unit the time unit of {@code duration}
-     * @throws InterruptedDelayException if interrupted prior to or during the delay
-     * @throws CanceledDelayException if canceled prior to or during the delay
+     * @throws InterruptedDelayException if interrupted during the delay or if already in an
+     *     interrupted state
+     * @throws CanceledDelayException if canceled during the delay or if already in a canceled state
      * @throws WrongThreadException if called from an unauthorized thread
      * @throws NullPointerException if {@code unit} is {@code null}
      */
@@ -66,8 +67,9 @@ public interface Delayer {
      * @param startNanoTime the start timestamp in nanoseconds relative to {@link System#nanoTime()}
      * @param duration the duration to delay from {@code startNanoTime}
      * @param unit the time unit of {@code duration}
-     * @throws InterruptedDelayException if interrupted prior to or during the delay
-     * @throws CanceledDelayException if canceled prior to or during the delay
+     * @throws InterruptedDelayException if interrupted during the delay or if already in an
+     *     interrupted state
+     * @throws CanceledDelayException if canceled during the delay or if already in a canceled state
      * @throws WrongThreadException if called from an unauthorized thread
      * @throws NullPointerException if {@code unit} is {@code null}
      */
@@ -78,12 +80,26 @@ public interface Delayer {
      * Blocks the bound thread until the specified deadline.
      *
      * @param deadline absolute timestamp in nanoseconds relative to {@link System#nanoTime()}
-     * @throws InterruptedDelayException if interrupted prior to or during the wait
-     * @throws CanceledDelayException if canceled prior to or during the wait
+     * @throws InterruptedDelayException if interrupted during the wait or if already in an
+     *     interrupted state
+     * @throws CanceledDelayException if canceled during the wait or if already in a canceled state
      * @throws WrongThreadException if called from an unauthorized thread
      */
     void delay(long deadline) throws InterruptedDelayException, CanceledDelayException;
 
-    /** Requests cancellation of the current execution. */
-    void cancel();
+    /**
+     * Cancels an active delay execution and interrupts the bound thread.
+     *
+     * @return {@code true} if an active delay was canceled; {@code false} otherwise
+     */
+    boolean cancel();
+
+    /**
+     * Resets the delayer from a canceled or interrupted state back to idle so it can be reused for
+     * subsequent delays, clearing any stale interrupt flag on the bound thread.
+     *
+     * @return {@code true} if the delayer was reset; {@code false} otherwise
+     * @throws WrongThreadException if called from an unauthorized thread
+     */
+    boolean reset();
 }

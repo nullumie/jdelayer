@@ -41,6 +41,7 @@ public abstract class AbstractDelayer implements Delayer {
     private static final String CANCELLED_MSG = "delay execution was explicitly cancelled";
     private static final String NULL_UNIT_MSG = "unit must not be null";
     private static final String NULL_THREAD_MSG = "thread must not be null";
+    private static final String REENTRANT_DELAY_MSG = "re-entrant delay calls are not allowed";
 
     private final Thread thread;
     private final AtomicReference<State> state = new AtomicReference<>(State.IDLE);
@@ -67,7 +68,23 @@ public abstract class AbstractDelayer implements Delayer {
 
     @Override
     public final boolean isInterrupted() {
-        return state.get() == State.INTERRUPTED;
+        State current = state.get();
+        return current == State.INTERRUPTED
+                || (current == State.DELAYING && thread.isInterrupted());
+    }
+
+    @Override
+    public final void delay(long duration, TimeUnit unit)
+            throws InterruptedDelayException, CanceledDelayException {
+        ensureOnThread();
+        Objects.requireNonNull(unit, NULL_UNIT_MSG);
+        enterDelayState();
+        try {
+            if (duration <= 0) return;
+            delayFrom(System.nanoTime(), duration, unit);
+        } finally {
+            exitDelayState();
+        }
     }
 
     @Override
@@ -78,17 +95,7 @@ public abstract class AbstractDelayer implements Delayer {
         enterDelayState();
         try {
             if (duration <= 0) return;
-            long remainingNanos = unit.toNanos(duration);
-
-            while (true) {
-                long elapsed = System.nanoTime() - startNanoTime;
-                long left = remainingNanos - elapsed;
-                if (left <= 0) break;
-
-                long stepNanos = Math.min(left, Long.MAX_VALUE / 2);
-                onDelay(System.nanoTime() + stepNanos);
-                checkState();
-            }
+            delayFrom(startNanoTime, duration, unit);
         } finally {
             exitDelayState();
         }
@@ -111,10 +118,22 @@ public abstract class AbstractDelayer implements Delayer {
     }
 
     @Override
-    public final void cancel() {
-        State previousState = state.getAndSet(State.CANCELED);
-        if (previousState == State.DELAYING) {
-            thread.interrupt();
+    public final boolean cancel() {
+        if (!state.compareAndSet(State.DELAYING, State.CANCELED)) return false;
+        thread.interrupt();
+        return true;
+    }
+
+    @Override
+    public final boolean reset() {
+        ensureOnThread();
+        while (true) {
+            State current = state.get();
+            if (current != State.CANCELED && current != State.INTERRUPTED) return false;
+            if (state.compareAndSet(current, State.IDLE)) {
+                boolean ignored = Thread.interrupted();
+                return true;
+            }
         }
     }
 
@@ -125,12 +144,26 @@ public abstract class AbstractDelayer implements Delayer {
      */
     protected abstract void onDelay(long deadline);
 
-    private void enterDelayState() throws CanceledDelayException, InterruptedDelayException {
+    private void delayFrom(long startNanoTime, long duration, TimeUnit unit)
+            throws InterruptedDelayException, CanceledDelayException {
+        long remainingNanos = unit.toNanos(duration);
         while (true) {
-            State current = state.get();
-            if (current == State.CANCELED) throwCancelledDelayException();
-            if (state.compareAndSet(current, State.DELAYING)) break;
+            long elapsed = System.nanoTime() - startNanoTime;
+            long left = remainingNanos - elapsed;
+            if (left <= 0) break;
+            long stepNanos = Math.min(left, Long.MAX_VALUE / 2);
+            onDelay(System.nanoTime() + stepNanos);
+            checkState();
         }
+    }
+
+    private void enterDelayState() throws CanceledDelayException, InterruptedDelayException {
+        do {
+            State current = state.get();
+            if (current == State.DELAYING) throw new IllegalStateException(REENTRANT_DELAY_MSG);
+            if (current == State.CANCELED) throw new CanceledDelayException(CANCELLED_MSG);
+            if (current == State.INTERRUPTED) throw new InterruptedDelayException(INTERRUPT_MSG);
+        } while (!state.compareAndSet(State.IDLE, State.DELAYING));
         checkState();
     }
 
@@ -139,11 +172,14 @@ public abstract class AbstractDelayer implements Delayer {
     }
 
     private void checkState() throws InterruptedDelayException, CanceledDelayException {
-        if (state.get() == State.CANCELED) throwCancelledDelayException();
+        State current = state.get();
+        if (current == State.CANCELED) throw new CanceledDelayException(CANCELLED_MSG);
+        if (current == State.INTERRUPTED) throw new InterruptedDelayException(INTERRUPT_MSG);
         if (thread.isInterrupted()) {
             if (state.compareAndSet(State.DELAYING, State.INTERRUPTED)
-                    || state.get() == State.INTERRUPTED) throwInterruptedDelayException();
-            if (state.get() == State.CANCELED) throwCancelledDelayException();
+                    || state.get() == State.INTERRUPTED)
+                throw new InterruptedDelayException(INTERRUPT_MSG);
+            if (state.get() == State.CANCELED) throw new CanceledDelayException(CANCELLED_MSG);
         }
     }
 
@@ -151,14 +187,6 @@ public abstract class AbstractDelayer implements Delayer {
         Thread currentThread = Thread.currentThread();
         if (this.thread == currentThread) return;
         throwWrongThreadException(this.thread, currentThread);
-    }
-
-    private static void throwInterruptedDelayException() throws InterruptedDelayException {
-        throw new InterruptedDelayException(INTERRUPT_MSG);
-    }
-
-    private static void throwCancelledDelayException() throws CanceledDelayException {
-        throw new CanceledDelayException(CANCELLED_MSG);
     }
 
     private static void throwWrongThreadException(Thread boundThread, Thread current) {
