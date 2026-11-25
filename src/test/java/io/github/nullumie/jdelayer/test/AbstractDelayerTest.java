@@ -26,52 +26,97 @@ import io.github.nullumie.jdelayer.InterruptedDelayException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.LongConsumer;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 class AbstractDelayerTest {
 
+    @FunctionalInterface
+    private interface DelayerCall {
+        void invoke(TestDelayer d) throws InterruptedDelayException, CanceledDelayException;
+    }
+
     private TestDelayer delayer;
 
-    /** Concrete test implementation of AbstractDelayer. */
     private static class TestDelayer extends AbstractDelayer {
-        private Runnable onDelayAction;
+        private LongConsumer onDelayAction;
 
         TestDelayer(Thread thread) {
             super(thread);
         }
 
-        void setOnDelayAction(Runnable onDelayAction) {
-            this.onDelayAction = onDelayAction;
+        void setOnDelayAction(Runnable action) {
+            this.onDelayAction = action != null ? deadline -> action.run() : null;
+        }
+
+        void setOnDelayDeadlineAction(LongConsumer action) {
+            this.onDelayAction = action;
         }
 
         @Override
         protected void onDelay(long deadline) {
             if (onDelayAction != null) {
-                onDelayAction.run();
+                onDelayAction.accept(deadline);
             } else {
-                Thread.yield();
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
             }
         }
     }
 
     @BeforeEach
     void setUp() {
-        Thread targetThread = Thread.currentThread();
-        delayer = new TestDelayer(targetThread);
+        delayer = new TestDelayer(Thread.currentThread());
+    }
+
+    private static Throwable runOffThread(Runnable task) throws InterruptedException {
+        AtomicReference<Throwable> thrown = new AtomicReference<>();
+        Thread other =
+                new Thread(
+                        () -> {
+                            try {
+                                task.run();
+                            } catch (Throwable t) {
+                                thrown.set(t);
+                            }
+                        });
+        other.start();
+        other.join();
+        return thrown.get();
     }
 
     @Nested
-    @DisplayName("Constructor & Initial State Tests")
-    class InitializationTests {
+    @DisplayName("Initialization & Thread Validation")
+    class ValidationTests {
+
+        static Stream<Named<DelayerCall>> threadBoundCalls() {
+            return Stream.of(
+                    Named.of("delay(duration, unit)", d -> d.delay(100, TimeUnit.MILLISECONDS)),
+                    Named.of(
+                            "delay(start, duration, unit)",
+                            d -> d.delay(System.nanoTime(), 100, TimeUnit.MILLISECONDS)),
+                    Named.of(
+                            "delay(deadline)",
+                            d -> d.delay(System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100))),
+                    Named.of("reset()", TestDelayer::reset));
+        }
 
         @Test
-        @DisplayName("Should throw NullPointerException when initialized with null thread")
-        void constructor_nullThread_throwsException() {
+        @DisplayName("Should throw NullPointerException for null thread or null TimeUnit")
+        void nullArguments_throwNullPointerException() {
             assertThrows(NullPointerException.class, () -> new TestDelayer(null));
+            assertThrows(NullPointerException.class, () -> delayer.delay(100, null));
+            assertThrows(
+                    NullPointerException.class, () -> delayer.delay(System.nanoTime(), 100, null));
         }
 
         @Test
@@ -81,228 +126,249 @@ class AbstractDelayerTest {
             assertFalse(delayer.isCanceled());
             assertFalse(delayer.isInterrupted());
         }
-    }
 
-    @Nested
-    @DisplayName("Thread Affinity & Validation Tests")
-    class ThreadValidationTests {
-
-        @Test
-        @DisplayName("Should throw WrongThreadException when delay called from wrong thread")
-        void delay_fromWrongThread_throwsWrongThreadException() throws InterruptedException {
-            AtomicReference<Throwable> thrown = new AtomicReference<>();
-            Thread wrongThread =
-                    new Thread(
-                            () -> {
-                                try {
-                                    delayer.delay(100, TimeUnit.MILLISECONDS);
-                                } catch (Throwable t) {
-                                    thrown.set(t);
-                                }
-                            });
-            wrongThread.start();
-            wrongThread.join();
-
-            assertInstanceOf(WrongThreadException.class, thrown.get());
-        }
-
-        @Test
-        @DisplayName(
-                "Should throw WrongThreadException when delay(startNanoTime, ...) called from wrong thread")
-        void delayWithStartTime_fromWrongThread_throwsWrongThreadException()
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("threadBoundCalls")
+        @DisplayName("Should throw WrongThreadException when called from unauthorized thread")
+        void boundMethods_fromWrongThread_throwWrongThreadException(DelayerCall call)
                 throws InterruptedException {
-            AtomicReference<Throwable> thrown = new AtomicReference<>();
-            long startNanoTime = System.nanoTime();
-            Thread wrongThread =
-                    new Thread(
-                            () -> {
-                                try {
-                                    delayer.delay(startNanoTime, 100, TimeUnit.MILLISECONDS);
-                                } catch (Throwable t) {
-                                    thrown.set(t);
-                                }
-                            });
-            wrongThread.start();
-            wrongThread.join();
-
-            assertInstanceOf(WrongThreadException.class, thrown.get());
-        }
-
-        @Test
-        @DisplayName("Should throw NullPointerException when TimeUnit is null")
-        void delay_nullTimeUnit_throwsException() {
-            assertThrows(NullPointerException.class, () -> delayer.delay(100, null));
-            assertThrows(
-                    NullPointerException.class, () -> delayer.delay(System.nanoTime(), 100, null));
+            Throwable thrown =
+                    runOffThread(
+                            () ->
+                                    assertThrows(
+                                            WrongThreadException.class,
+                                            () -> call.invoke(delayer)));
+            assertNull(thrown);
         }
     }
 
     @Nested
-    @DisplayName("Delay Execution & Boundary Tests")
+    @DisplayName("Delay Execution & Boundaries")
     class DelayExecutionTests {
 
-        @Test
-        @DisplayName("Should complete immediately for non-positive duration")
-        void delay_nonPositiveDuration_returnsImmediately() {
-            assertDoesNotThrow(() -> delayer.delay(0, TimeUnit.MILLISECONDS));
-            assertDoesNotThrow(() -> delayer.delay(-10, TimeUnit.MILLISECONDS));
-            assertDoesNotThrow(() -> delayer.delay(System.nanoTime(), 0, TimeUnit.MILLISECONDS));
-            assertDoesNotThrow(() -> delayer.delay(System.nanoTime(), -10, TimeUnit.MILLISECONDS));
-            assertFalse(delayer.isDelaying());
+        static Stream<Named<DelayerCall>> immediateCompletionCalls() {
+            return Stream.of(
+                    Named.of("zero duration", d -> d.delay(0, TimeUnit.MILLISECONDS)),
+                    Named.of("negative duration", d -> d.delay(-10, TimeUnit.MILLISECONDS)),
+                    Named.of(
+                            "zero duration with start",
+                            d -> d.delay(System.nanoTime(), 0, TimeUnit.MILLISECONDS)),
+                    Named.of(
+                            "negative duration with start",
+                            d -> d.delay(System.nanoTime(), -10, TimeUnit.MILLISECONDS)),
+                    Named.of("past deadline", d -> d.delay(System.nanoTime() - 1_000_000)),
+                    Named.of("current deadline", d -> d.delay(System.nanoTime())),
+                    Named.of(
+                            "already elapsed window",
+                            d ->
+                                    d.delay(
+                                            System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(50),
+                                            10,
+                                            TimeUnit.MILLISECONDS)));
         }
 
-        @Test
-        @DisplayName("Should complete immediately if target deadline is in the past or now")
-        void delay_deadlineInPast_returnsImmediately() {
-            long now = System.nanoTime();
-            assertDoesNotThrow(() -> delayer.delay(now - 1_000_000));
-            assertDoesNotThrow(() -> delayer.delay(now));
-            assertFalse(delayer.isDelaying());
-        }
-
-        @Test
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("immediateCompletionCalls")
         @DisplayName(
-                "Should complete immediately if startNanoTime + duration is already in the past")
-        void delayWithStartTime_alreadyExpired_returnsImmediately() {
+                "Should return immediately without invoking onDelay for expired/non-positive inputs")
+        void nonPositiveOrExpired_returnsImmediatelyWithoutStep(DelayerCall call) {
             AtomicBoolean executed = new AtomicBoolean(false);
             delayer.setOnDelayAction(() -> executed.set(true));
 
-            long pastStartTime = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(50);
-            assertDoesNotThrow(() -> delayer.delay(pastStartTime, 10, TimeUnit.MILLISECONDS));
-
+            assertDoesNotThrow(() -> call.invoke(delayer));
             assertFalse(executed.get());
             assertFalse(delayer.isDelaying());
         }
 
         @Test
-        @DisplayName("Should execute delay relative to given startNanoTime")
-        void delayWithStartTime_validFutureWindow_executesUntilExpired() {
-            AtomicBoolean executed = new AtomicBoolean(false);
-            delayer.setOnDelayAction(() -> executed.set(true));
-
-            long startTime = System.nanoTime();
-            assertDoesNotThrow(() -> delayer.delay(startTime, 15, TimeUnit.MILLISECONDS));
-
-            assertTrue(executed.get());
-            assertFalse(delayer.isDelaying());
-        }
-
-        @Test
-        @DisplayName("Should execute delay using absolute deadline overload")
-        void delay_withDeadline_executesUntilExpired() {
-            AtomicBoolean executed = new AtomicBoolean(false);
-            delayer.setOnDelayAction(() -> executed.set(true));
-
-            long futureDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(10);
-            assertDoesNotThrow(() -> delayer.delay(futureDeadline));
-            assertTrue(executed.get());
-            assertFalse(delayer.isDelaying());
-        }
-
-        @Test
-        @DisplayName("Should handle long duration saturation without throwing numeric overflow")
-        void delay_overflowDuration_capsSafely() throws InterruptedException {
-            AtomicBoolean executed = new AtomicBoolean(false);
-
-            Thread worker =
-                    new Thread(
-                            () -> {
-                                TestDelayer overflowDelayer =
-                                        new TestDelayer(Thread.currentThread());
-                                overflowDelayer.setOnDelayAction(
-                                        () -> {
-                                            executed.set(true);
-                                            overflowDelayer.cancel();
-                                        });
-
-                                assertThrows(
-                                        CanceledDelayException.class,
-                                        () ->
-                                                overflowDelayer.delay(
-                                                        System.nanoTime(),
-                                                        Long.MAX_VALUE,
-                                                        TimeUnit.DAYS));
-                            });
-
-            worker.start();
-            worker.join(2000);
-            assertTrue(executed.get());
-        }
-
-        @Test
-        @DisplayName("Should enter DELAYING state during execution and return to IDLE afterwards")
-        void delay_tracksDelayingStateCorrectly() {
+        @DisplayName("Should execute delay overloads and track DELAYING state accurately")
+        void validDelays_executeAndTrackState() {
             AtomicBoolean wasDelaying = new AtomicBoolean(false);
             delayer.setOnDelayAction(() -> wasDelaying.set(delayer.isDelaying()));
 
-            assertDoesNotThrow(() -> delayer.delay(10, TimeUnit.MILLISECONDS));
+            assertDoesNotThrow(() -> delayer.delay(System.nanoTime(), 5, TimeUnit.MILLISECONDS));
             assertTrue(wasDelaying.get());
+            assertFalse(delayer.isDelaying());
+
+            wasDelaying.set(false);
+            assertDoesNotThrow(
+                    () -> delayer.delay(System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(5)));
+            assertTrue(wasDelaying.get());
+            assertFalse(delayer.isDelaying());
+        }
+
+        @Test
+        @DisplayName("Should cap step duration at Long.MAX_VALUE / 2 without numeric overflow")
+        void hugeDuration_capsStepSafely() {
+            AtomicLong capturedDeadline = new AtomicLong();
+            long before = System.nanoTime();
+
+            delayer.setOnDelayDeadlineAction(
+                    deadline -> {
+                        capturedDeadline.set(deadline);
+                        delayer.cancel();
+                    });
+
+            assertThrows(
+                    CanceledDelayException.class,
+                    () -> delayer.delay(before, Long.MAX_VALUE, TimeUnit.DAYS));
+
+            long step = capturedDeadline.get() - before;
+            assertTrue(step > 0 && step <= (Long.MAX_VALUE / 2) + TimeUnit.SECONDS.toNanos(1));
+        }
+
+        @Test
+        @DisplayName("Should throw IllegalStateException on re-entrant delay call")
+        void reentrantDelay_throwsIllegalStateException() {
+            delayer.setOnDelayAction(
+                    () ->
+                            assertThrows(
+                                    IllegalStateException.class,
+                                    () -> delayer.delay(5, TimeUnit.MILLISECONDS)));
+
+            assertDoesNotThrow(() -> delayer.delay(5, TimeUnit.MILLISECONDS));
             assertFalse(delayer.isDelaying());
         }
     }
 
     @Nested
-    @DisplayName("Interruption & Cancellation Tests")
-    class CancellationAndInterruptTests {
+    @DisplayName("Interruption, Cancellation & Reset")
+    class LifecycleTests {
 
         @Test
-        @DisplayName(
-                "Should throw InterruptedDelayException when bound thread is interrupted prior to delay")
-        void delay_threadInterruptedBeforehand_throwsInterruptedDelayException() {
+        @DisplayName("Should return false when cancel or reset is called in IDLE state")
+        void cancelAndReset_whenIdle_returnFalse() {
+            assertFalse(delayer.cancel());
+            assertFalse(delayer.isCanceled());
+            assertFalse(delayer.reset());
+        }
+
+        @Test
+        @DisplayName("Should throw InterruptedDelayException if thread is interrupted beforehand")
+        void preInterruptedThread_throwsImmediatelyAndRejectsSubsequentDelays() {
             Thread.currentThread().interrupt();
             try {
                 assertThrows(
                         InterruptedDelayException.class,
-                        () -> delayer.delay(100, TimeUnit.MILLISECONDS));
+                        () -> delayer.delay(50, TimeUnit.MILLISECONDS));
                 assertTrue(delayer.isInterrupted());
+                assertFalse(delayer.isDelaying());
+
+                // Subsequent calls while still INTERRUPTED must also fail
+                assertThrows(
+                        InterruptedDelayException.class,
+                        () -> delayer.delay(5, TimeUnit.MILLISECONDS));
             } finally {
                 Thread.interrupted();
             }
         }
 
         @Test
-        @DisplayName("Should throw CanceledDelayException when pre-canceled")
-        void delay_precanceled_throwsCanceledDelayException() {
-            delayer.cancel();
-            assertThrows(
-                    CanceledDelayException.class, () -> delayer.delay(100, TimeUnit.MILLISECONDS));
-            assertTrue(delayer.isCanceled());
+        @DisplayName(
+                "Should transition to INTERRUPTED when interrupted mid-delay by another thread")
+        void externalInterrupt_duringDelay_transitionsToInterrupted() throws Exception {
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicReference<Throwable> thrown = new AtomicReference<>();
+            AtomicReference<TestDelayer> workerDelayer = new AtomicReference<>();
+
+            Thread worker =
+                    new Thread(
+                            () -> {
+                                TestDelayer d = new TestDelayer(Thread.currentThread());
+                                workerDelayer.set(d);
+                                d.setOnDelayAction(
+                                        () -> {
+                                            entered.countDown();
+                                            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                                        });
+                                try {
+                                    d.delay(10, TimeUnit.SECONDS);
+                                } catch (Throwable t) {
+                                    thrown.set(t);
+                                }
+                            });
+
+            worker.start();
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            worker.interrupt();
+            worker.join(2000);
+
+            assertFalse(worker.isAlive());
+            assertInstanceOf(InterruptedDelayException.class, thrown.get());
+            assertTrue(workerDelayer.get().isInterrupted());
+            assertFalse(workerDelayer.get().isDelaying());
+        }
+
+        @Test
+        @DisplayName("Should cancel active delay from another thread and reject subsequent delays")
+        void externalCancel_duringDelay_cancelsAndInterrupts() throws Exception {
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicReference<Throwable> thrown = new AtomicReference<>();
+            AtomicReference<TestDelayer> workerDelayer = new AtomicReference<>();
+
+            Thread worker =
+                    new Thread(
+                            () -> {
+                                TestDelayer d = new TestDelayer(Thread.currentThread());
+                                workerDelayer.set(d);
+                                d.setOnDelayAction(
+                                        () -> {
+                                            entered.countDown();
+                                            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                                        });
+                                try {
+                                    d.delay(10, TimeUnit.SECONDS);
+                                } catch (Throwable t) {
+                                    thrown.set(t);
+                                }
+                                // Subsequent call while CANCELED must also throw
+                                // CanceledDelayException
+                                assertThrows(
+                                        CanceledDelayException.class,
+                                        () -> d.delay(5, TimeUnit.MILLISECONDS));
+                            });
+
+            worker.start();
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            assertTrue(workerDelayer.get().cancel());
+            worker.join(2000);
+
+            assertFalse(worker.isAlive());
+            assertInstanceOf(CanceledDelayException.class, thrown.get());
+            assertTrue(workerDelayer.get().isCanceled());
+            assertFalse(workerDelayer.get().isDelaying());
         }
 
         @Test
         @DisplayName(
-                "Should interrupt active delaying thread when cancel is invoked from another thread")
-        void cancel_activeDelayingThread_triggersInterruption() throws Exception {
-            CountDownLatch enteredDelayLatch = new CountDownLatch(1);
-            AtomicReference<Throwable> caughtException = new AtomicReference<>();
-            TestDelayer[] activeDelayerHolder = new TestDelayer[1];
+                "Should reset CANCELED and INTERRUPTED states back to IDLE and clear interrupt flag")
+        void reset_fromTerminalStates_restoresIdleAndAllowsReuse() {
+            // 1. Reset from CANCELED
+            delayer.setOnDelayAction(delayer::cancel);
+            assertThrows(
+                    CanceledDelayException.class, () -> delayer.delay(50, TimeUnit.MILLISECONDS));
+            assertTrue(delayer.isCanceled());
 
-            Thread workerThread =
-                    new Thread(
-                            () -> {
-                                TestDelayer activeDelayer = new TestDelayer(Thread.currentThread());
-                                activeDelayerHolder[0] = activeDelayer;
-                                activeDelayer.setOnDelayAction(
-                                        () -> {
-                                            enteredDelayLatch.countDown();
-                                            Thread.yield();
-                                        });
+            assertTrue(delayer.reset());
+            assertFalse(delayer.isCanceled());
+            assertFalse(Thread.currentThread().isInterrupted());
 
-                                try {
-                                    activeDelayer.delay(10, TimeUnit.SECONDS);
-                                } catch (Throwable t) {
-                                    caughtException.set(t);
-                                }
-                            });
+            delayer.setOnDelayAction(null);
+            assertDoesNotThrow(() -> delayer.delay(2, TimeUnit.MILLISECONDS));
 
-            workerThread.start();
-            assertTrue(enteredDelayLatch.await(2, TimeUnit.SECONDS));
+            // 2. Reset from INTERRUPTED
+            Thread.currentThread().interrupt();
+            assertThrows(
+                    InterruptedDelayException.class,
+                    () -> delayer.delay(50, TimeUnit.MILLISECONDS));
+            assertTrue(delayer.isInterrupted());
 
-            activeDelayerHolder[0].cancel();
-            workerThread.join(2000);
-
-            assertInstanceOf(CanceledDelayException.class, caughtException.get());
-            assertTrue(activeDelayerHolder[0].isCanceled());
+            assertTrue(delayer.reset());
+            assertFalse(delayer.isInterrupted());
+            assertFalse(Thread.currentThread().isInterrupted());
+            assertDoesNotThrow(() -> delayer.delay(2, TimeUnit.MILLISECONDS));
         }
     }
 }
