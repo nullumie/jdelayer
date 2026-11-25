@@ -35,7 +35,9 @@ import org.jspecify.annotations.Nullable;
 public abstract class AbstractDelayerService implements DelayerService, AutoCloseable {
 
     private static final String NULL_THREAD_MSG = "thread must not be null";
+    private static final String NULL_DELAYER_MSG = "onProvideDelayer must not return null";
     private static final String SHUTDOWN_MSG = "DelayerService has been closed";
+    private static final String NULL_TIME_UNIT_MSG = "TimeUnit must not be null";
 
     private final Map<Thread, Delayer> delayers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -76,46 +78,60 @@ public abstract class AbstractDelayerService implements DelayerService, AutoClos
     @Override
     public final void delay(long startNanoTime, long duration, TimeUnit unit)
             throws InterruptedDelayException, CanceledDelayException {
-        ensureNotClosed();
+        Objects.requireNonNull(unit, NULL_TIME_UNIT_MSG);
         Thread thread = Thread.currentThread();
-        Delayer delayer = delayers.computeIfAbsent(thread, this::onProvideDelayer);
+        Delayer delayer = getOrCreateDelayer(thread);
         delayer.delay(startNanoTime, duration, unit);
     }
 
     @Override
     public final void delay(long deadline)
             throws InterruptedDelayException, CanceledDelayException {
-        ensureNotClosed();
         Thread thread = Thread.currentThread();
-        Delayer delayer = delayers.computeIfAbsent(thread, this::onProvideDelayer);
+        Delayer delayer = getOrCreateDelayer(thread);
         delayer.delay(deadline);
     }
 
     @Override
-    public final void cancel(Thread thread) {
+    public final boolean cancel(Thread thread) {
         Delayer delayer = getDelayer(thread);
-        if (delayer == null) return;
-        delayer.cancel();
+        if (delayer == null) return false;
+        return delayer.cancel();
     }
 
     @Override
-    public final void cancelAll() {
+    public final boolean cancelAll() {
         ensureNotClosed();
-        for (Delayer delayer : delayers.values()) delayer.cancel();
+        boolean anyCanceled = false;
+        for (Delayer delayer : delayers.values()) {
+            if (delayer.cancel()) anyCanceled = true;
+        }
+        return anyCanceled;
     }
 
     @Override
-    public final void release(Thread thread) {
+    public final boolean reset() {
+        ensureNotClosed();
+        Thread thread = Thread.currentThread();
+        Delayer delayer = getDelayer(thread);
+        if (delayer == null) return false;
+        return delayer.reset();
+    }
+
+    @Override
+    public final boolean release(Thread thread) {
         ensureNotClosed();
         Objects.requireNonNull(thread, NULL_THREAD_MSG);
         Delayer delayer = delayers.remove(thread);
-        if (delayer != null) delayer.cancel();
+        if (delayer == null) return false;
+        delayer.cancel();
+        return true;
     }
 
     @Override
-    public final void releaseAll() {
+    public final boolean releaseAll() {
         ensureNotClosed();
-        releaseAllInternal();
+        return releaseAllInternal();
     }
 
     @Override
@@ -146,9 +162,33 @@ public abstract class AbstractDelayerService implements DelayerService, AutoClos
      */
     protected abstract Delayer onProvideDelayer(Thread thread);
 
-    private void releaseAllInternal() {
-        for (Delayer delayer : delayers.values()) delayer.cancel();
-        delayers.clear();
+    private Delayer getOrCreateDelayer(Thread thread) {
+        ensureNotClosed();
+        Delayer delayer =
+                delayers.computeIfAbsent(
+                        thread,
+                        t -> {
+                            ensureNotClosed();
+                            return Objects.requireNonNull(onProvideDelayer(t), NULL_DELAYER_MSG);
+                        });
+        if (closed.get()) {
+            delayers.remove(thread, delayer);
+            delayer.cancel();
+            throw new IllegalStateException(SHUTDOWN_MSG);
+        }
+        return delayer;
+    }
+
+    private boolean releaseAllInternal() {
+        boolean releasedAny = false;
+        for (Thread thread : delayers.keySet()) {
+            Delayer delayer = delayers.remove(thread);
+            if (delayer != null) {
+                delayer.cancel();
+                releasedAny = true;
+            }
+        }
+        return releasedAny;
     }
 
     private void ensureNotClosed() {

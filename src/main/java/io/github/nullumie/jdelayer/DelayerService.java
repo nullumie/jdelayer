@@ -55,7 +55,7 @@ public interface DelayerService extends AutoCloseable {
     boolean isCanceled(Thread thread);
 
     /**
-     * Checks if the delay operation of the specified thread was interrupted.
+     * Checks if the delayer associated with the specified thread is in an interrupted state.
      *
      * @param thread the target thread
      * @return {@code true} if interrupted; {@code false} otherwise
@@ -78,17 +78,21 @@ public interface DelayerService extends AutoCloseable {
      * Releases the specified thread, removing its delayer context and canceling any ongoing delay.
      *
      * @param thread the target thread
+     * @return {@code true} if a delayer context was registered for the thread and released; {@code
+     *     false} otherwise
      * @throws NullPointerException if {@code thread} is {@code null}
      * @throws IllegalStateException if this service is closed
      */
-    void release(Thread thread);
+    boolean release(Thread thread);
 
     /**
      * Releases all threads, canceling ongoing delays and clearing all internal contexts.
      *
+     * @return {@code true} if at least one delayer context was registered and released; {@code
+     *     false} otherwise
      * @throws IllegalStateException if this service is closed
      */
-    void releaseAll();
+    boolean releaseAll();
 
     /**
      * Releases the calling thread from this service.
@@ -104,8 +108,9 @@ public interface DelayerService extends AutoCloseable {
      *
      * @param duration the length of time to delay
      * @param unit the time unit of {@code duration}
-     * @throws InterruptedDelayException if interrupted prior to or during the delay
-     * @throws CanceledDelayException if canceled prior to or during the delay
+     * @throws InterruptedDelayException if interrupted during the delay or if already in an
+     *     interrupted state
+     * @throws CanceledDelayException if canceled during the delay or if already in a canceled state
      * @throws NullPointerException if {@code unit} is {@code null}
      * @throws IllegalStateException if this service is closed
      */
@@ -121,9 +126,9 @@ public interface DelayerService extends AutoCloseable {
      * @param startNanoTime the start timestamp in nanoseconds relative to {@link System#nanoTime()}
      * @param duration the duration to delay from {@code startNanoTime}
      * @param unit the time unit of {@code duration}
-     * @throws InterruptedDelayException if interrupted prior to or during the delay
-     * @throws CanceledDelayException if canceled prior to or during the delay
-     * @throws WrongThreadException if called from an unauthorized thread
+     * @throws InterruptedDelayException if interrupted during the delay or if already in an
+     *     interrupted state
+     * @throws CanceledDelayException if canceled during the delay or if already in a canceled state
      * @throws NullPointerException if {@code unit} is {@code null}
      * @throws IllegalStateException if this service is closed
      */
@@ -134,8 +139,9 @@ public interface DelayerService extends AutoCloseable {
      * Blocks the current thread until the specified deadline.
      *
      * @param deadline absolute timestamp in nanoseconds relative to {@link System#nanoTime()}
-     * @throws InterruptedDelayException if interrupted prior to or during the wait
-     * @throws CanceledDelayException if canceled prior to or during the wait
+     * @throws InterruptedDelayException if interrupted during the wait or if already in an
+     *     interrupted state
+     * @throws CanceledDelayException if canceled during the wait or if already in a canceled state
      * @throws IllegalStateException if this service is closed
      */
     void delay(long deadline) throws InterruptedDelayException, CanceledDelayException;
@@ -144,17 +150,30 @@ public interface DelayerService extends AutoCloseable {
      * Cancels any active delay for the specified thread.
      *
      * @param thread the target thread
+     * @return {@code true} if an active delay for {@code thread} was canceled; {@code false}
+     *     otherwise
      * @throws NullPointerException if {@code thread} is {@code null}
      * @throws IllegalStateException if this service is closed
      */
-    void cancel(Thread thread);
+    boolean cancel(Thread thread);
 
     /**
      * Cancels all active delays managed by this service.
      *
+     * @return {@code true} if at least one active delay was canceled; {@code false} otherwise
      * @throws IllegalStateException if this service is closed
      */
-    void cancelAll();
+    boolean cancelAll();
+
+    /**
+     * Resets the delayer associated with the current thread from a canceled or interrupted state
+     * back to idle so it can be reused for subsequent delays, clearing any stale interrupt flag on
+     * the thread.
+     *
+     * @return {@code true} if a delayer for the current thread was reset; {@code false} otherwise
+     * @throws IllegalStateException if this service is closed
+     */
+    boolean reset();
 
     /**
      * Closes the service, forcefully canceling all active delays and releasing all thread contexts.
