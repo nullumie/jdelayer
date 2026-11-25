@@ -37,7 +37,7 @@
     </scm>
 
     <properties>
-        <revision>1.1.0</revision>
+        <revision>2.0.0</revision>
         <changelist></changelist>
 
         <maven.compiler.release>21</maven.compiler.release>
@@ -265,9 +265,9 @@
                 <changelist>-SNAPSHOT</changelist>
                 <gpg.skip>true</gpg.skip>
                 <skipPublishing>true</skipPublishing>
+                <maven.test.skip>true</maven.test.skip>
             </properties>
         </profile>
-
         <profile>
             <id>integration</id>
             <properties>
@@ -275,9 +275,9 @@
                 <changelist>-SNAPSHOT</changelist>
                 <gpg.skip>true</gpg.skip>
                 <skipPublishing>false</skipPublishing>
+                <maven.test.skip>false</maven.test.skip>
             </properties>
         </profile>
-
         <profile>
             <id>production</id>
             <properties>
@@ -285,6 +285,7 @@
                 <changelist></changelist>
                 <gpg.skip>false</gpg.skip>
                 <skipPublishing>false</skipPublishing>
+                <maven.test.skip>false</maven.test.skip>
             </properties>
         </profile>
     </profiles>
