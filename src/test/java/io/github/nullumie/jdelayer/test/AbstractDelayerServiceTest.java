@@ -18,73 +18,76 @@
  */
 package io.github.nullumie.jdelayer.test;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import io.github.nullumie.jdelayer.AbstractDelayer;
 import io.github.nullumie.jdelayer.AbstractDelayerService;
 import io.github.nullumie.jdelayer.CanceledDelayException;
 import io.github.nullumie.jdelayer.Delayer;
+import io.github.nullumie.jdelayer.InterruptedDelayException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 class AbstractDelayerServiceTest {
 
     private TestDelayerService service;
 
     private static class StubDelayer extends AbstractDelayer {
-        private Runnable onDelayAction;
+        private volatile Runnable onStep;
 
-        public StubDelayer(Thread thread) {
+        StubDelayer(Thread thread) {
             super(thread);
         }
 
-        void setOnDelayAction(Runnable onDelayAction) {
-            this.onDelayAction = onDelayAction;
+        void setOnStep(Runnable onStep) {
+            this.onStep = onStep;
         }
 
         @Override
         protected void onDelay(long deadline) {
-            if (onDelayAction != null) {
-                onDelayAction.run();
-            }
-            long remainingNanos = deadline - System.nanoTime();
-            if (remainingNanos > 0) {
-                LockSupport.parkNanos(Math.min(remainingNanos, 10_000_000L));
+            Runnable action = onStep;
+            if (action != null) {
+                action.run();
+            } else {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
             }
         }
     }
 
     private static class TestDelayerService extends AbstractDelayerService {
-        private Runnable onProvideCallback;
+        private final AtomicInteger providedCount = new AtomicInteger();
+        private volatile Consumer<StubDelayer> configurer;
 
-        void setOnProvideCallback(Runnable callback) {
-            this.onProvideCallback = callback;
+        void setConfigurer(Consumer<StubDelayer> configurer) {
+            this.configurer = configurer;
+        }
+
+        int getProvidedCount() {
+            return providedCount.get();
         }
 
         @Override
         protected Delayer onProvideDelayer(Thread thread) {
+            providedCount.incrementAndGet();
             StubDelayer delayer = new StubDelayer(thread);
-            if (onProvideCallback != null) {
-                delayer.setOnDelayAction(onProvideCallback);
+            Consumer<StubDelayer> cfg = configurer;
+            if (cfg != null) {
+                cfg.accept(delayer);
             }
             return delayer;
-        }
-
-        public Delayer exposeGetDelayer(Thread thread) {
-            return getDelayer(thread);
         }
     }
 
@@ -93,351 +96,354 @@ class AbstractDelayerServiceTest {
         service = new TestDelayerService();
     }
 
-    @Nested
-    @DisplayName("Delayer Registration & Provisioning Tests")
-    class ProvisioningTests {
-
-        @Test
-        @DisplayName("Should lazily create and map Delayer on first delay request for thread")
-        void lazilyProvisionsDelayer() {
-            Thread currentThread = Thread.currentThread();
-
-            assertFalse(service.hasDelayer(currentThread));
-            assertNull(service.exposeGetDelayer(currentThread));
-
-            assertDoesNotThrow(() -> service.delay(1, TimeUnit.MILLISECONDS));
-
-            assertTrue(service.hasDelayer(currentThread));
-            assertNotNull(service.exposeGetDelayer(currentThread));
+    @AfterEach
+    void tearDown() {
+        if (!service.isClosed()) {
+            service.close();
         }
-
-        @Test
-        @DisplayName(
-                "Should lazily create and map Delayer when delay(startNanoTime, duration, unit) is invoked")
-        void lazilyProvisionsDelayerWithStartNanoTime() {
-            Thread currentThread = Thread.currentThread();
-            long startNanoTime = System.nanoTime();
-
-            assertFalse(service.hasDelayer(currentThread));
-            assertNull(service.exposeGetDelayer(currentThread));
-
-            assertDoesNotThrow(() -> service.delay(startNanoTime, 1, TimeUnit.MILLISECONDS));
-
-            assertTrue(service.hasDelayer(currentThread));
-            assertNotNull(service.exposeGetDelayer(currentThread));
-        }
-
-        @Test
-        @DisplayName("Should lazily create and map Delayer when delay(deadline) is invoked")
-        void lazilyProvisionsDelayerWithDeadline() {
-            Thread currentThread = Thread.currentThread();
-            long futureDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(10);
-
-            assertFalse(service.hasDelayer(currentThread));
-
-            assertDoesNotThrow(() -> service.delay(futureDeadline));
-
-            assertTrue(service.hasDelayer(currentThread));
-            assertNotNull(service.exposeGetDelayer(currentThread));
-        }
-
-        @Test
-        @DisplayName(
-                "Should throw NullPointerException when passing null thread to registry methods")
-        void throwsNpeOnNullThread() {
-            assertThrows(NullPointerException.class, () -> service.hasDelayer(null));
-            assertThrows(NullPointerException.class, () -> service.isDelaying(null));
-            assertThrows(NullPointerException.class, () -> service.isCanceled(null));
-            assertThrows(NullPointerException.class, () -> service.isInterrupted(null));
-            assertThrows(NullPointerException.class, () -> service.cancel(null));
-            assertThrows(NullPointerException.class, () -> service.release(null));
-            assertThrows(NullPointerException.class, () -> service.exposeGetDelayer(null));
-        }
-
-        @Test
-        @DisplayName("Should return false/null for status queries on unmapped threads")
-        void returnsDefaultStatusForUnmappedThread() {
-            Thread otherThread = new Thread(() -> {});
-
-            assertFalse(service.hasDelayer(otherThread));
-            assertFalse(service.isDelaying(otherThread));
-            assertFalse(service.isCanceled(otherThread));
-            assertFalse(service.isInterrupted(otherThread));
-            assertNull(service.exposeGetDelayer(otherThread));
-        }
+        Thread.interrupted();
     }
 
     @Nested
-    @DisplayName("Delay Execution & Delegation Tests")
-    class DelayExecutionTests {
+    @DisplayName("Null Validation & Unregistered Thread Queries")
+    class ValidationAndDefaultsTests {
+
+        static Stream<Named<Consumer<TestDelayerService>>> nullThreadCalls() {
+            return Stream.of(
+                    Named.of("isDelaying(null)", s -> s.isDelaying(null)),
+                    Named.of("isCanceled(null)", s -> s.isCanceled(null)),
+                    Named.of("isInterrupted(null)", s -> s.isInterrupted(null)),
+                    Named.of("hasDelayer(null)", s -> s.hasDelayer(null)),
+                    Named.of("cancel(null)", s -> s.cancel(null)),
+                    Named.of("release(null)", s -> s.release(null)));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("nullThreadCalls")
+        @DisplayName("Should throw NullPointerException when thread argument is null")
+        void nullThread_throwsNullPointerException(Consumer<TestDelayerService> call) {
+            assertThrows(NullPointerException.class, () -> call.accept(service));
+        }
 
         @Test
-        @DisplayName("Should throw NullPointerException if TimeUnit parameter is null")
-        void throwsNpeOnNullTimeUnit() {
-            assertThrows(NullPointerException.class, () -> service.delay(10, null));
+        @DisplayName("Should throw NullPointerException when TimeUnit is null without provisioning")
+        void nullTimeUnit_throwsNullPointerException() {
             assertThrows(
                     NullPointerException.class, () -> service.delay(System.nanoTime(), 10, null));
+            assertFalse(service.hasDelayer(Thread.currentThread()));
         }
 
         @Test
-        @DisplayName("Should reflect delaying status during active delay execution")
-        void reflectsDelayingStatus() throws InterruptedException {
-            CountDownLatch enteredDelay = new CountDownLatch(1);
-            AtomicBoolean wasDelayingReported = new AtomicBoolean(false);
+        @DisplayName("Should throw NullPointerException when onProvideDelayer returns null")
+        void nullProvidedDelayer_throwsNullPointerException() {
+            AbstractDelayerService brokenService =
+                    new AbstractDelayerService() {
+                        @Override
+                        protected Delayer onProvideDelayer(Thread thread) {
+                            return null;
+                        }
+                    };
 
-            service.setOnProvideCallback(enteredDelay::countDown);
-
-            Thread workerThread =
-                    new Thread(
-                            () -> {
-                                try {
-                                    service.delay(1, TimeUnit.SECONDS);
-                                } catch (Throwable ignored) {
-                                }
-                            },
-                            "worker-thread");
-
-            workerThread.start();
-            assertTrue(enteredDelay.await(2, TimeUnit.SECONDS));
-
-            wasDelayingReported.set(service.isDelaying(workerThread));
-
-            service.cancel(workerThread);
-            workerThread.join();
-
-            assertTrue(wasDelayingReported.get());
-            assertFalse(service.isDelaying(workerThread));
+            NullPointerException ex =
+                    assertThrows(
+                            NullPointerException.class,
+                            () -> brokenService.delay(System.nanoTime() + 1_000_000));
+            assertEquals("onProvideDelayer must not return null", ex.getMessage());
+            assertFalse(brokenService.hasDelayer(Thread.currentThread()));
         }
 
         @Test
-        @DisplayName(
-                "Should reflect delaying status and support cancellation during delay(startNanoTime, duration, unit)")
-        void reflectsDelayingStatusWithStartNanoTime() throws InterruptedException {
-            CountDownLatch enteredDelay = new CountDownLatch(1);
-            AtomicBoolean wasDelayingReported = new AtomicBoolean(false);
-            AtomicReference<Throwable> thrown = new AtomicReference<>();
-
-            service.setOnProvideCallback(enteredDelay::countDown);
-
-            Thread workerThread =
-                    new Thread(
-                            () -> {
-                                try {
-                                    service.delay(System.nanoTime(), 2, TimeUnit.SECONDS);
-                                } catch (Throwable t) {
-                                    thrown.set(t);
-                                }
-                            },
-                            "worker-thread-start-nano");
-
-            workerThread.start();
-            assertTrue(enteredDelay.await(2, TimeUnit.SECONDS));
-
-            wasDelayingReported.set(service.isDelaying(workerThread));
-
-            service.cancel(workerThread);
-            workerThread.join();
-
-            assertTrue(wasDelayingReported.get());
-            assertFalse(service.isDelaying(workerThread));
-            assertTrue(service.isCanceled(workerThread));
-            assertInstanceOf(CanceledDelayException.class, thrown.get());
+        @DisplayName("Should return false for all queries and mutators on unregistered threads")
+        void unregisteredThread_returnsFalseForAllPublicMethods() {
+            Thread current = Thread.currentThread();
+            assertFalse(service.isClosed());
+            assertFalse(service.hasDelayer(current));
+            assertFalse(service.isDelaying(current));
+            assertFalse(service.isCanceled(current));
+            assertFalse(service.isInterrupted(current));
+            assertFalse(service.cancel(current));
+            assertFalse(service.cancelAll());
+            assertFalse(service.reset());
+            assertFalse(service.release(current));
+            assertFalse(service.releaseAll());
         }
     }
 
     @Nested
-    @DisplayName("Cancellation & Release Lifecycle Tests")
-    class CancellationAndReleaseTests {
+    @DisplayName("Provisioning, Delegation & Thread Isolation")
+    class ProvisioningAndDelegationTests {
 
         @Test
-        @DisplayName("Should safely ignore cancel(thread) if thread has no delayer")
-        void ignoreCancelOnUnmappedThread() {
-            Thread unmappedThread = new Thread(() -> {});
-            assertDoesNotThrow(() -> service.cancel(unmappedThread));
+        @DisplayName("Should provision once per thread across both delay overloads")
+        void delay_provisionsOncePerThreadAndReusesDelayer() {
+            Thread current = Thread.currentThread();
+
+            assertDoesNotThrow(() -> service.delay(System.nanoTime(), 2, TimeUnit.MILLISECONDS));
+            assertTrue(service.hasDelayer(current));
+            assertEquals(1, service.getProvidedCount());
+
+            assertDoesNotThrow(
+                    () -> service.delay(System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(2)));
+            assertEquals(1, service.getProvidedCount());
         }
 
         @Test
-        @DisplayName("Should cancel target thread's delayer when cancel(thread) is invoked")
-        void cancelsSpecificThreadDelayer() throws InterruptedException {
-            CountDownLatch delayStarted = new CountDownLatch(1);
+        @DisplayName("Should isolate delayer instances across different threads")
+        void delay_fromMultipleThreads_isolatesDelayers() throws InterruptedException {
+            Thread mainThread = Thread.currentThread();
+            assertDoesNotThrow(() -> service.delay(System.nanoTime(), 1, TimeUnit.MILLISECONDS));
+
+            AtomicReference<Thread> workerRef = new AtomicReference<>();
+            Thread worker =
+                    new Thread(
+                            () -> {
+                                workerRef.set(Thread.currentThread());
+                                assertDoesNotThrow(
+                                        () ->
+                                                service.delay(
+                                                        System.nanoTime(),
+                                                        1,
+                                                        TimeUnit.MILLISECONDS));
+                            });
+            worker.start();
+            worker.join(2000);
+
+            assertEquals(2, service.getProvidedCount());
+            assertTrue(service.hasDelayer(mainThread));
+            assertTrue(service.hasDelayer(workerRef.get()));
+        }
+
+        @Test
+        @DisplayName("Should accurately delegate isDelaying, isCanceled, cancel, and reset")
+        void stateQueriesAndControl_delegateToThreadDelayer() {
+            Thread current = Thread.currentThread();
+
+            service.setConfigurer(
+                    delayer ->
+                            delayer.setOnStep(
+                                    () -> {
+                                        assertTrue(service.isDelaying(current));
+                                        assertTrue(service.cancel(current));
+                                    }));
+
+            assertThrows(
+                    CanceledDelayException.class,
+                    () -> service.delay(System.nanoTime(), 50, TimeUnit.MILLISECONDS));
+
+            assertFalse(service.isDelaying(current));
+            assertTrue(service.isCanceled(current));
+            assertTrue(service.reset());
+            assertFalse(service.isCanceled(current));
+            assertFalse(service.reset());
+        }
+
+        @Test
+        @DisplayName("Should accurately delegate isInterrupted when bound thread is interrupted")
+        void isInterrupted_delegatesToThreadDelayer() {
+            Thread current = Thread.currentThread();
+            Thread.currentThread().interrupt();
+
+            assertThrows(
+                    InterruptedDelayException.class,
+                    () -> service.delay(System.nanoTime(), 50, TimeUnit.MILLISECONDS));
+
+            assertTrue(service.isInterrupted(current));
+            assertTrue(service.reset());
+            assertFalse(service.isInterrupted(current));
+        }
+    }
+
+    @Nested
+    @DisplayName("Bulk Operations & Release Semantics")
+    class BulkOperationsTests {
+
+        @Test
+        @DisplayName("Should cancel active delays via cancelAll while keeping delayers registered")
+        void cancelAll_cancelsActiveDelaysAndKeepsRegistrations() throws Exception {
+            CountDownLatch entered = new CountDownLatch(1);
             AtomicReference<Throwable> thrown = new AtomicReference<>();
 
-            service.setOnProvideCallback(delayStarted::countDown);
+            service.setConfigurer(
+                    delayer ->
+                            delayer.setOnStep(
+                                    () -> {
+                                        entered.countDown();
+                                        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                                    }));
 
             Thread worker =
                     new Thread(
                             () -> {
                                 try {
-                                    service.delay(2, TimeUnit.SECONDS);
+                                    service.delay(System.nanoTime(), 10, TimeUnit.SECONDS);
                                 } catch (Throwable t) {
                                     thrown.set(t);
                                 }
                             });
 
             worker.start();
-            assertTrue(delayStarted.await(2, TimeUnit.SECONDS));
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
 
-            service.cancel(worker);
-            worker.join();
+            assertTrue(service.cancelAll());
+            worker.join(2000);
 
-            assertTrue(service.isCanceled(worker));
             assertInstanceOf(CanceledDelayException.class, thrown.get());
-        }
-
-        @Test
-        @DisplayName("Should cancel all active delayers when cancelAll() is invoked")
-        void cancelsAllRegisteredDelayers() throws InterruptedException {
-            CountDownLatch startSignal = new CountDownLatch(2);
-
-            service.setOnProvideCallback(startSignal::countDown);
-
-            Thread w1 =
-                    new Thread(
-                            () -> {
-                                try {
-                                    service.delay(2, TimeUnit.SECONDS);
-                                } catch (Throwable ignored) {
-                                }
-                            });
-
-            Thread w2 =
-                    new Thread(
-                            () -> {
-                                try {
-                                    service.delay(2, TimeUnit.SECONDS);
-                                } catch (Throwable ignored) {
-                                }
-                            });
-
-            w1.start();
-            w2.start();
-            assertTrue(startSignal.await(2, TimeUnit.SECONDS));
-
-            service.cancelAll();
-
-            w1.join();
-            w2.join();
-
-            assertTrue(service.isCanceled(w1));
-            assertTrue(service.isCanceled(w2));
-        }
-
-        @Test
-        @DisplayName("Should remove delayer and invoke cancel() on release(thread)")
-        void releasesThreadDelayer() {
-            assertDoesNotThrow(() -> service.delay(1, TimeUnit.MILLISECONDS));
-            Thread current = Thread.currentThread();
-
-            Delayer delayer = service.exposeGetDelayer(current);
-            assertTrue(service.hasDelayer(current));
-
-            service.release(current);
-
-            assertFalse(service.hasDelayer(current));
-            assertTrue(delayer.isCanceled());
-        }
-
-        @Test
-        @DisplayName("Should remove all delayers and cancel them on releaseAll()")
-        void releasesAllDelayers() throws InterruptedException {
-            CountDownLatch latch = new CountDownLatch(2);
-            AtomicReference<Delayer> d1Ref = new AtomicReference<>();
-            AtomicReference<Delayer> d2Ref = new AtomicReference<>();
-
-            Thread w1 =
-                    new Thread(
-                            () -> {
-                                try {
-                                    service.delay(1, TimeUnit.MILLISECONDS);
-                                    d1Ref.set(service.exposeGetDelayer(Thread.currentThread()));
-                                    latch.countDown();
-                                } catch (Throwable ignored) {
-                                }
-                            });
-
-            Thread w2 =
-                    new Thread(
-                            () -> {
-                                try {
-                                    service.delay(1, TimeUnit.MILLISECONDS);
-                                    d2Ref.set(service.exposeGetDelayer(Thread.currentThread()));
-                                    latch.countDown();
-                                } catch (Throwable ignored) {
-                                }
-                            });
-
-            w1.start();
-            w2.start();
-            assertTrue(latch.await(2, TimeUnit.SECONDS));
-            w1.join();
-            w2.join();
-
-            service.releaseAll();
-
-            assertFalse(service.hasDelayer(w1));
-            assertFalse(service.hasDelayer(w2));
-            assertTrue(d1Ref.get().isCanceled());
-            assertTrue(d2Ref.get().isCanceled());
-        }
-    }
-
-    @Nested
-    @DisplayName("Service Close & Shutdown Tests")
-    class CloseLifecycleTests {
-
-        @Test
-        @DisplayName("Should report isClosed state accurately before and after close()")
-        void reportsClosedStateCorrectly() {
-            assertFalse(service.isClosed());
-            service.close();
-            assertTrue(service.isClosed());
-        }
-
-        @Test
-        @DisplayName("Should cancel and release all registered delayers on close()")
-        void closesAndReleasesEverything() {
-            assertDoesNotThrow(() -> service.delay(1, TimeUnit.MILLISECONDS));
-            Thread current = Thread.currentThread();
-            Delayer delayer = service.exposeGetDelayer(current);
-
-            service.close();
-
-            assertTrue(service.isClosed());
-            assertTrue(delayer.isCanceled());
-        }
-
-        @Test
-        @DisplayName("Should be idempotent when calling close() multiple times")
-        void idempotentClose() {
-            assertDoesNotThrow(service::close);
-            assertDoesNotThrow(service::close);
-            assertTrue(service.isClosed());
+            assertTrue(service.hasDelayer(worker));
+            assertTrue(service.isCanceled(worker));
+            assertFalse(service.cancelAll());
         }
 
         @Test
         @DisplayName(
-                "Should throw IllegalStateException on subsequent operations after service is closed")
-        void throwsIllegalStateExceptionWhenClosed() {
+                "Should return boolean on release(thread), cancel active delay, and remove entry")
+        void release_cancelsAndRemovesSingleThread() throws Exception {
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicReference<Throwable> thrown = new AtomicReference<>();
+
+            service.setConfigurer(
+                    delayer ->
+                            delayer.setOnStep(
+                                    () -> {
+                                        entered.countDown();
+                                        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                                    }));
+
+            Thread worker =
+                    new Thread(
+                            () -> {
+                                try {
+                                    service.delay(System.nanoTime(), 10, TimeUnit.SECONDS);
+                                } catch (Throwable t) {
+                                    thrown.set(t);
+                                }
+                            });
+
+            worker.start();
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            assertTrue(service.release(worker));
+            assertFalse(service.release(worker));
+            worker.join(2000);
+
+            assertInstanceOf(CanceledDelayException.class, thrown.get());
+            assertFalse(service.hasDelayer(worker));
+        }
+
+        @Test
+        @DisplayName("Should return boolean on releaseAll(), cancel all delays, and clear registry")
+        void releaseAll_cancelsAllAndClearsRegistry() throws Exception {
+            assertFalse(service.releaseAll());
+
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicReference<Throwable> thrown = new AtomicReference<>();
+
+            service.setConfigurer(
+                    delayer ->
+                            delayer.setOnStep(
+                                    () -> {
+                                        entered.countDown();
+                                        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                                    }));
+
+            Thread worker =
+                    new Thread(
+                            () -> {
+                                try {
+                                    service.delay(System.nanoTime(), 10, TimeUnit.SECONDS);
+                                } catch (Throwable t) {
+                                    thrown.set(t);
+                                }
+                            });
+
+            worker.start();
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            assertTrue(service.releaseAll());
+            assertFalse(service.releaseAll());
+            worker.join(2000);
+
+            assertInstanceOf(CanceledDelayException.class, thrown.get());
+            assertFalse(service.hasDelayer(worker));
+        }
+    }
+
+    @Nested
+    @DisplayName("Shutdown & AutoCloseable Lifecycle")
+    class CloseLifecycleTests {
+
+        static Stream<Named<Consumer<TestDelayerService>>> postCloseOperations() {
+            Thread t = Thread.currentThread();
+            return Stream.of(
+                    Named.of("isDelaying(thread)", s -> s.isDelaying(t)),
+                    Named.of("isCanceled(thread)", s -> s.isCanceled(t)),
+                    Named.of("isInterrupted(thread)", s -> s.isInterrupted(t)),
+                    Named.of("hasDelayer(thread)", s -> s.hasDelayer(t)),
+                    Named.of(
+                            "delay(start, duration, unit)",
+                            s -> {
+                                try {
+                                    s.delay(System.nanoTime(), 10, TimeUnit.MILLISECONDS);
+                                } catch (InterruptedDelayException | CanceledDelayException e) {
+                                    fail(e);
+                                }
+                            }),
+                    Named.of(
+                            "delay(deadline)",
+                            s -> {
+                                try {
+                                    s.delay(System.nanoTime() + 1_000_000);
+                                } catch (InterruptedDelayException | CanceledDelayException e) {
+                                    fail(e);
+                                }
+                            }),
+                    Named.of("cancel(thread)", s -> s.cancel(t)),
+                    Named.of("cancelAll()", TestDelayerService::cancelAll),
+                    Named.of("reset()", TestDelayerService::reset),
+                    Named.of("release(thread)", s -> s.release(t)),
+                    Named.of("releaseAll()", TestDelayerService::releaseAll));
+        }
+
+        @Test
+        @DisplayName("Should close idempotently and cancel active worker delays")
+        void close_isIdempotentAndCancelsActiveDelays() throws Exception {
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicReference<Throwable> thrown = new AtomicReference<>();
+
+            service.setConfigurer(
+                    delayer ->
+                            delayer.setOnStep(
+                                    () -> {
+                                        entered.countDown();
+                                        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                                    }));
+
+            Thread worker =
+                    new Thread(
+                            () -> {
+                                try {
+                                    service.delay(System.nanoTime(), 10, TimeUnit.SECONDS);
+                                } catch (Throwable t) {
+                                    thrown.set(t);
+                                }
+                            });
+
+            worker.start();
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
             service.close();
+            assertTrue(service.isClosed());
+            assertDoesNotThrow(() -> service.close());
 
-            Thread current = Thread.currentThread();
+            worker.join(2000);
+            assertInstanceOf(CanceledDelayException.class, thrown.get());
+        }
 
-            assertThrows(
-                    IllegalStateException.class, () -> service.delay(10, TimeUnit.MILLISECONDS));
-            assertThrows(
-                    IllegalStateException.class,
-                    () -> service.delay(System.nanoTime(), 10, TimeUnit.MILLISECONDS));
-            assertThrows(
-                    IllegalStateException.class, () -> service.delay(System.nanoTime() + 1000));
-            assertThrows(IllegalStateException.class, () -> service.hasDelayer(current));
-            assertThrows(IllegalStateException.class, () -> service.isDelaying(current));
-            assertThrows(IllegalStateException.class, () -> service.isCanceled(current));
-            assertThrows(IllegalStateException.class, () -> service.isInterrupted(current));
-            assertThrows(IllegalStateException.class, () -> service.cancel(current));
-            assertThrows(IllegalStateException.class, () -> service.cancelAll());
-            assertThrows(IllegalStateException.class, () -> service.release(current));
-            assertThrows(IllegalStateException.class, () -> service.releaseAll());
-            assertThrows(IllegalStateException.class, () -> service.exposeGetDelayer(current));
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("postCloseOperations")
+        @DisplayName("Should throw IllegalStateException for every public operation after close")
+        void operationsAfterClose_throwIllegalStateException(Consumer<TestDelayerService> call) {
+            service.close();
+            assertThrows(IllegalStateException.class, () -> call.accept(service));
         }
     }
 }
